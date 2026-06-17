@@ -93,24 +93,16 @@ def chunk_text(text: str, max_chars: int = 1000) -> list[str]:
 
 
 def hashed_embedding(text: str) -> list[float]:
-    """Embedding local déterministe, sans téléchargement externe.
-
-    Ce n'est pas un vrai modèle sémantique. C'est suffisant pour tester l'architecture RAG
-    dans Codespaces quand Hugging Face est inaccessible.
-    """
     vector = [0.0] * EMBEDDING_DIM
     tokens = [t.lower() for t in TOKEN_RE.findall(text)]
-
     features = []
     features.extend(tokens)
     features.extend(f"{a}_{b}" for a, b in zip(tokens, tokens[1:]))
-
     for feature in features:
         digest = hashlib.md5(feature.encode("utf-8")).digest()
         index = int.from_bytes(digest[:4], "big") % EMBEDDING_DIM
         sign = 1.0 if digest[4] % 2 == 0 else -1.0
         vector[index] += sign
-
     norm = math.sqrt(sum(x * x for x in vector)) or 1.0
     return [x / norm for x in vector]
 
@@ -133,20 +125,13 @@ def index_documents() -> int:
     ids = []
     texts = []
     metadatas = []
-
     for doc in load_documents():
         for chunk_index, chunk in enumerate(chunk_text(doc["text"])):
             ids.append(f"{doc['id']}_{chunk_index}")
             texts.append(chunk)
-            metadatas.append({
-                "source": doc["title"],
-                "path": doc["path"],
-                "chunk": chunk_index,
-            })
-
+            metadatas.append({"source": doc["title"], "path": doc["path"], "chunk": chunk_index})
     if not texts:
         return 0
-
     embeddings = [hashed_embedding(text) for text in texts]
     collection.upsert(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
     return len(texts)
@@ -154,16 +139,11 @@ def index_documents() -> int:
 
 def search_documents(question: str, n_results: int = 5) -> list[dict[str, Any]]:
     collection = get_collection()
-    results = collection.query(
-        query_embeddings=[hashed_embedding(question)],
-        n_results=n_results,
-    )
-
+    results = collection.query(query_embeddings=[hashed_embedding(question)], n_results=n_results)
     passages = []
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
     distances = results.get("distances", [[]])[0]
-
     for doc, meta, distance in zip(documents, metadatas, distances):
         passages.append({
             "text": doc,
@@ -179,11 +159,12 @@ def build_answer(question: str, passages: list[dict[str, Any]]) -> str:
     lines = [
         "## Réponse de test — version offline",
         "",
+        f"**Question traitée :** {question}",
+        "",
         "Cette version utilise un embedding local déterministe, sans téléchargement Hugging Face.",
         "Elle sert à valider l'architecture, pas la qualité finale du modèle de recherche.",
         "",
     ]
-
     if "rapport" in question.lower() or "conform" in question.lower() or "a-001" in question.lower():
         lines.extend([
             "### Trame de rapport d'aide à l'évaluation",
@@ -198,7 +179,6 @@ def build_answer(question: str, passages: list[dict[str, Any]]) -> str:
             "- présence des pièces justificatives attendues.",
             "",
         ])
-
     lines.append("### Passages retrouvés")
     for index, passage in enumerate(passages, start=1):
         lines.append(f"#### Source {index} — {passage['source']}")
@@ -209,33 +189,7 @@ def build_answer(question: str, passages: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-st.set_page_config(page_title="Assistant documentaire ANDPC — offline", layout="wide")
-st.title("Assistant documentaire ANDPC — Test Codespaces offline")
-st.caption("Prototype avec données fictives uniquement. Aucun téléchargement de modèle externe.")
-
-with st.sidebar:
-    st.header("Administration")
-    docs = load_documents()
-    st.metric("Documents détectés", len(docs))
-
-    if st.button("Réinitialiser l'index"):
-        reset_collection()
-        st.success("Index réinitialisé. Relance l'indexation.")
-
-    if st.button("Indexer les documents", type="primary"):
-        with st.spinner("Indexation en cours..."):
-            count = index_documents()
-        st.success(f"{count} passages indexés.")
-
-    st.markdown("---")
-    st.subheader("Corpus")
-    for doc in docs:
-        st.markdown(f"- `{doc['path']}`")
-
-    st.markdown("---")
-    st.info("Version offline : pas de Hugging Face, pas de sentence-transformers, pas de modèle externe.")
-
-examples = [
+EXAMPLES = [
     "Quels sont les points de vigilance pour contrôler une action rattachée à l'OP-001 ?",
     "L'action A-001 est-elle cohérente avec la durée minimale attendue ?",
     "Que faire si une action n'a pas d'objectif pédagogique explicite ?",
@@ -243,21 +197,53 @@ examples = [
     "Quels documents doivent être vérifiés par un agent POOL ?",
 ]
 
+
+def load_selected_example() -> None:
+    st.session_state.question_text = st.session_state.example_selector
+
+
+st.set_page_config(page_title="Assistant documentaire ANDPC — offline", layout="wide")
+st.title("Assistant documentaire ANDPC — Test Codespaces offline")
+st.caption("Prototype avec données fictives uniquement. Aucun téléchargement de modèle externe.")
+
+if "question_text" not in st.session_state:
+    st.session_state.question_text = EXAMPLES[0]
+
+with st.sidebar:
+    st.header("Administration")
+    docs = load_documents()
+    st.metric("Documents détectés", len(docs))
+    if st.button("Réinitialiser l'index"):
+        reset_collection()
+        st.success("Index réinitialisé. Relance l'indexation.")
+    if st.button("Indexer les documents", type="primary"):
+        with st.spinner("Indexation en cours..."):
+            count = index_documents()
+        st.success(f"{count} passages indexés.")
+    st.markdown("---")
+    st.subheader("Corpus")
+    for doc in docs:
+        st.markdown(f"- `{doc['path']}`")
+    st.markdown("---")
+    st.info("Version offline : pas de Hugging Face, pas de sentence-transformers, pas de modèle externe.")
+
 st.header("Question métier")
-selected = st.selectbox("Exemples", examples)
-question = st.text_area("Question", value=selected, height=110)
+st.selectbox("Exemples", EXAMPLES, key="example_selector")
+st.button("Charger cet exemple dans la question", on_click=load_selected_example)
+question = st.text_area("Question réellement envoyée", key="question_text", height=110)
 n_results = st.slider("Nombre de passages recherchés", min_value=2, max_value=10, value=5)
 
 if st.button("Lancer la recherche", type="primary"):
-    if not question.strip():
+    final_question = st.session_state.question_text.strip()
+    if not final_question:
         st.warning("Saisis une question.")
     else:
+        st.info(f"Question envoyée : {final_question}")
         with st.spinner("Recherche documentaire..."):
-            passages = search_documents(question, n_results=n_results)
-
+            passages = search_documents(final_question, n_results=n_results)
         if not passages:
             st.error("Aucun passage trouvé. As-tu indexé les documents ?")
         else:
-            st.markdown(build_answer(question, passages))
+            st.markdown(build_answer(final_question, passages))
             with st.expander("Détails techniques des passages"):
                 st.json(passages)
